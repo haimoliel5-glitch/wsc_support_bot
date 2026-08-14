@@ -1,16 +1,22 @@
 import streamlit as st
 import requests
 import os
+import io
 import base64
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
+import pandas as pd
+import altair as alt
 
 # ============================================================
 #  הגדרות
 # ============================================================
 API_URL       = "https://server.iac.ac.il/api/v1/studentapi/chat/completions"
-API_KEY       = "sk-std-NYI6dMVcFMobVTH3T8hrp2s4CWCNwJDi04ZLmflNzQU"
-SUPPORT_PHONE = "0527007042"  # פנימי בלבד
+API_KEY       = os.environ.get("WSC_API_KEY", "sk-std-NYI6dMVcFMobVTH3T8hrp2s4CWCNwJDi04ZLmflNzQU")
+SUPPORT_PHONE = "0527007042"
 COMPANY_NAME  = "WSC Sports"
+CATEGORIES    = ["בעיה בוידיאו", "בעיה באודיו", "בעיה בפלטפורמה", "אחר"]
+STATUSES      = ["פתוחה", "בטיפול", "ממתין ללקוח", "סגורה"]
 # ============================================================
 
 HEADERS = {
@@ -18,415 +24,509 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# ============================================================
-#  מאגר ידע פנימי - 15 שאלות תשובות
-# ============================================================
-SYSTEM_PROMPT = """You are a technical support bot for WSC Sports. Answer in the SAME language the user uses (Hebrew or English). Be concise (2-4 sentences max).
+SYSTEM_PROMPT = """You are a technical support bot for WSC Sports. Answer in Hebrew, concise (2-4 sentences), professional.
+Diagnose the issue category (Video/Audio/Platform/Other) and give a clear step-by-step solution.
 
 KNOWLEDGE BASE:
-
 === LIVE FEEDS & INGEST ===
 Q: RTMP/SRT stream connected but black screen?
-A: Check: (1) encoder is actively pushing data (2) firewall isn't blocking the port (3) stream key/URL match exactly.
+A: בדוק: (1) האנקודר משדר בפועל (2) חומת האש לא חוסמת את הפורט (3) מפתח/כתובת הסטרים תואמים בדיוק.
+Q: תזמון ingest לפיד חי חדש?
+A: Live Management > Add Stream. בחר פרוטוקול (RTMP/SRT), הזן פרטי סטרים, הגדר זמני התחלה/סיום, שמור.
+Q: בעיית סינכרון אודיו-וידאו?
+A: מקורה בצד האנקודר. ודא ש-sample rate של אודיו/וידאו תואמים, בדוק keyframe intervals, הפעל מחדש את האנקודר.
+Q: פורמטים נתמכים להעלאה ידנית?
+A: MP4 ו-MOV. קודקים: H.264 או H.265. אודיו: AAC.
 
-Q: Schedule new live feed ingest?
-A: Live Management > Add Stream. Select protocol (RTMP/SRT), enter stream details, set Start/End times, click Save.
+=== קליפים אוטומטיים ===
+Q: כלל אוטומציה להיילייטים של שחקן ספציפי?
+A: Automation Rules > Create New Rule > Conditions > Player Name > הזן שם > בחר יעד > הפעל.
+Q: קליפ ידני כשה-AI פספס רגע?
+A: פתח את העורך למשחק. I = נקודת התחלה, O = נקודת סיום. הוסף תגיות, צור קליפ.
+Q: שינוי יחס תמונה ל-TikTok/Reels?
+A: בכלל אוטומציה או בעורך, עבור ל-Cropping, בחר 9:16 Vertical, הפעל Auto-Tracking.
 
-Q: Audio-video sync issue?
-A: Originates from encoder side. Verify audio/video sample rates match recommended settings, check keyframe intervals. Restart encoder.
+=== הפצה ופרסום ===
+Q: חיבור/אימות מחדש של רשת חברתית?
+A: Destinations > Social Accounts. חדש: Add Account. אימות מחדש: לחץ Re-authenticate.
+Q: קליפים נכשלים בפרסום ל-OTT?
+A: בדוק ב-Publishing Logs את הסיבה המדויקת שהוחזרה מה-API של הפלטפורמה.
+Q: עדכון כותרת קליפ שכבר פורסם?
+A: כן, ניתן לעדכן מטא-דאטה תחת Published Clips, פרט ל-X/Twitter שלא תומך בעדכון רטרואקטיבי.
 
-Q: Supported codecs/formats for manual uploads?
-A: MP4 and MOV. Codecs: H.264 or H.265 (HEVC). Audio: AAC.
-
-=== AUTOMATED CLIPPING & HIGHLIGHTS ===
-Q: Automation rule for specific player highlights?
-A: Automation Rules > Create New Rule > Conditions tab > select Player Name > type name > select destination > Activate.
-
-Q: Manual clipping when AI missed a play?
-A: Open Editor for that game. Keyboard: I = In point, O = Out point. Add tags, click Create Clip.
-
-Q: Change aspect ratio for TikTok/Reels?
-A: In Automation Rule or Editor, go to Cropping section, select 9:16 Vertical. Enable Auto-Tracking.
-
-Q: Adjust pre-roll/post-roll padding?
-A: Global: Settings > Clip Preferences. Per-clip: drag handles on timeline in Editor.
-
-Q: Add custom graphics/intros/watermarks?
-A: Graphics Configuration. Upload PNG, JPG, or transparent MOV. Apply as overlay or intro/outro in Automation Rules.
-
-Q: Filter clips by play type (3-pointers, dunks)?
-A: In Automation Rule, add Play Type condition. Select from dropdown: 3-Pointer, Dunk, Save, Goal, etc.
-
-=== DISTRIBUTION & PUBLISHING ===
-Q: Connect/re-authenticate social media?
-A: Destinations > Social Accounts. New: Add Account, follow prompts. Re-auth: click Re-authenticate next to warning icon.
-
-Q: Videos failing to publish to OTT - error logs?
-A: Publishing Logs (Distribution History). Click failed clip to see exact error from OTT platform's API.
-
-Q: Set embargo/publishing delay for broadcast rights?
-A: Destination settings or Automation Rule > Publishing Delay > enter delay time in minutes/hours.
-
-Q: Send metadata (JSON/XML) to our CMS?
-A: Destinations > Add Destination > Custom Endpoint (Webhook). Enter CMS URL, select payload format, map metadata fields.
-
-Q: Update published clip title retroactively?
-A: Yes - edit metadata under Published Clips, click Update. Note: X/Twitter doesn't allow retroactive title updates via API.
-
-=== INSTRUCTIONS ===
-- If question matches the KB above, use that exact answer (in user's language)
-- For urgent issues ("all customers", "completely down", "urgent") - say escalating to human agent
-- If you don't know - say "I'll escalate to a human agent" / "מעביר לנציג אנושי"
-- Categorize issues: Live Feeds / Clipping / Distribution / Other"""
+הנחיות:
+- אם השאלה תואמת את מאגר הידע, ענה בהתאם
+- תמיד תן פתרון שלב-אחר-שלב קצר וברור
+- אם התבקשת "פתרון חלופי" - תן גישה שונה מהפתרון הקודם, לא אותו דבר
+- אם אינך יודע, אמור שיש להסלים לנציג אנושי"""
 
 
-def call_api_smart(messages):
-    system = [m for m in messages if m["role"] == "system"]
-    others = [m for m in messages if m["role"] != "system"]
-    recent = system + others[-3:]
-    
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": recent,
-        "max_tokens": 4000
-    }
-    
+def call_bot(messages, want_alternative=False):
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + messages[-6:]
+    if want_alternative:
+        msgs.append({"role": "user", "content": "הפתרון הקודם לא עזר, תן לי בבקשה גישה/פתרון חלופי שונה."})
+    payload = {"model": "gpt-4o-mini", "messages": msgs, "max_tokens": 500}
     try:
-        r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=90)
+        r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=60)
         data = r.json()
         if "choices" in data:
             content = data["choices"][0]["message"].get("content", "")
             if content and content.strip():
                 return content.strip()
     except Exception as e:
-        return f"Error: {str(e)[:100]}"
-    
-    try:
-        payload["messages"] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            messages[-1]
-        ]
-        r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=90)
-        data = r.json()
-        if "choices" in data:
-            content = data["choices"][0]["message"].get("content", "")
-            if content and content.strip():
-                return content.strip()
-    except Exception as e:
-        return f"Error: {str(e)[:100]}"
-    
-    return "Please rephrase / נסה לנסח אחרת"
+        return f"שגיאה בתקשורת עם השרת: {str(e)[:100]}"
+    return "לא הצלחתי לעבד את הבקשה, מעביר לנציג אנושי."
 
-def analyze_image(image_b64, mime, description):
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": [
-                {"type": "text", "text": description or "Analyze this image"},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}}
-            ]}
-        ],
-        "max_tokens": 4000
+
+def summarize_ticket(ticket):
+    """יוצר תקציר אוטומטי לנציג - מה נוסה ומה נכשל"""
+    lines = [f"פנייה {ticket['id']} | קטגוריה: {ticket['category']}", f"תיאור: {ticket['description']}"]
+    bot_msgs = [m["content"] for m in ticket["messages"] if m["role"] == "assistant"]
+    for i, sol in enumerate(bot_msgs, 1):
+        lines.append(f"ניסיון {i} (נכשל): {sol[:150]}")
+    return "\n".join(lines)
+
+
+# ============================================================
+#  STATE
+# ============================================================
+if "tickets" not in st.session_state:
+    st.session_state.tickets = {}          # id -> ticket dict
+if "current_ticket_id" not in st.session_state:
+    st.session_state.current_ticket_id = None
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = "form"    # form | chat | feedback
+if "selected_agent_ticket" not in st.session_state:
+    st.session_state.selected_agent_ticket = None
+
+
+def new_ticket(category, description, attachment_name=None):
+    tid = f"WSC-{datetime.now().strftime('%H%M%S')}-{uuid.uuid4().hex[:3].upper()}"
+    st.session_state.tickets[tid] = {
+        "id": tid,
+        "category": category,
+        "description": description,
+        "attachment": attachment_name,
+        "status": "פתוחה",
+        "messages": [{"role": "user", "content": description}],
+        "created_at": datetime.now(),
+        "first_reply_at": None,
+        "resolved_by": None,       # bot | agent
+        "attempts": 0,
+        "rating": None,
+        "feedback_note": None,
+        "summary": None,
+        "agent_replies": [],
     }
-    try:
-        r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=90)
-        data = r.json()
-        if "choices" in data:
-            content = data["choices"][0]["message"].get("content", "")
-            if content and content.strip():
-                return content.strip()
-    except:
-        pass
-    return "Failed to analyze"
+    return tid
 
-logo_b64 = ""
-if os.path.exists("logo.jpg"):
-    with open("logo.jpg", "rb") as f:
-        logo_b64 = base64.b64encode(f.read()).decode()
 
+def get_ticket():
+    tid = st.session_state.current_ticket_id
+    return st.session_state.tickets.get(tid) if tid else None
+
+
+# ============================================================
+#  עיצוב
+# ============================================================
 st.set_page_config(page_title=COMPANY_NAME, page_icon="🎯", layout="wide")
 
-bg = f'background-image: url("data:image/jpeg;base64,{logo_b64}"); background-size: 35%; background-position: center; background-repeat: no-repeat; background-attachment: fixed;' if logo_b64 else ''
-
-st.markdown(f"""
+st.markdown("""
 <style>
-    body {{ direction: rtl; }}
-    #MainMenu, footer, header {{ visibility: hidden; }}
-    .stApp {{ background: #0a0e1a; {bg} }}
-    .stApp::before {{ content: ""; position: fixed; inset: 0; background: rgba(10,14,26,0.9); z-index: 0; pointer-events: none; }}
-    .block-container {{ position: relative; z-index: 1; padding: 0 1rem 5rem !important; max-width: 100% !important; }}
-    
-    .wa-header {{ background: linear-gradient(90deg, #d4ff00 0%, #aacc00 100%); color: #000; padding: 12px 16px; display: flex; align-items: center; gap: 12px; margin: -1rem -1rem 1rem; border-bottom: 3px solid #000; z-index: 10; box-shadow: 0 4px 20px rgba(212,255,0,0.3); }}
-    .wa-name {{ font-weight: bold; font-size: 16px; color: #000 !important; }}
-    .wa-status {{ font-size: 12px; color: #333 !important; }}
-    
-    .ticket-badge {{ background: rgba(212,255,0,0.15); border: 1px solid rgba(212,255,0,0.4); border-radius: 8px; padding: 8px 12px; color: #d4ff00; font-size: 13px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }}
-    
-    .chat-wrap {{ background: rgba(236,229,221,0.95); border-radius: 12px; padding: 10px; margin-bottom: 10px; }}
-    
-    /* טקסט שחור על בועות */
-    .msg-user {{ background: #DCF8C6; color: #000 !important; padding: 8px 12px; border-radius: 12px 2px 12px 12px; margin: 6px 0 6px auto; max-width: 80%; width: fit-content; text-align: right; font-size: 14px; line-height: 1.6; word-break: break-word; white-space: pre-wrap; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }}
-    .msg-bot {{ background: white; color: #000 !important; padding: 8px 12px; border-radius: 2px 12px 12px 12px; margin: 6px auto 6px 0; max-width: 80%; width: fit-content; text-align: right; font-size: 14px; line-height: 1.6; border-right: 3px solid #d4ff00; word-break: break-word; white-space: pre-wrap; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }}
-    .msg-time {{ font-size: 11px; color: #666 !important; margin-top: 3px; }}
-    .msg-wrapper-user {{ display: flex; justify-content: flex-end; width: 100%; }}
-    .msg-wrapper-bot {{ display: flex; justify-content: flex-start; width: 100%; }}
-    
-    .thinking {{ background: white; color: #000 !important; padding: 10px 16px; margin: 6px auto 6px 0; width: fit-content; border-radius: 2px 12px 12px 12px; border-right: 3px solid #d4ff00; font-weight: bold; animation: pulse 1s infinite; }}
-    @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.4; }} }}
-    
-    .stButton > button {{ background: transparent !important; color: #d4ff00 !important; border: 1px solid rgba(212,255,0,0.4) !important; border-radius: 8px !important; padding: 8px 16px !important; font-size: 13px !important; width: 100% !important; }}
-    .stButton > button:hover {{ color: #000 !important; background: #d4ff00 !important; border-color: #d4ff00 !important; }}
-    
-    section[data-testid="stSidebar"] {{ background: rgba(15,20,35,0.97) !important; }}
-    section[data-testid="stSidebar"] * {{ color: white !important; }}
-    
-    .stSelectbox label, .stFileUploader label, .stTextArea label {{ color: #d4ff00 !important; }}
-    
-    /* כרטיסי מדדים */
-    .metric-card {{ background: rgba(255,255,255,0.05); border: 1px solid rgba(212,255,0,0.3); border-radius: 12px; padding: 20px; text-align: center; }}
-    .metric-value {{ font-size: 2rem; font-weight: bold; color: #d4ff00; }}
-    .metric-label {{ font-size: 0.85rem; color: #ccc; margin-top: 4px; }}
-    .metric-target {{ font-size: 0.75rem; color: #888; margin-top: 2px; }}
-    .metric-pass {{ color: #4ade80 !important; font-weight: bold; }}
-    .metric-fail {{ color: #f87171 !important; font-weight: bold; }}
-    
-    .feedback-box {{ background: rgba(255,255,255,0.95); border-radius: 12px; padding: 20px; text-align: center; margin: 10px 0; }}
-    .feedback-box h3 {{ color: #000 !important; margin: 0 0 10px; }}
-    .feedback-box p {{ color: #555 !important; }}
+    body { direction: rtl; }
+    #MainMenu, footer, header { visibility: hidden; }
+    .stApp { background: #0a0e1a; }
+    .block-container { padding: 0 1rem 3rem !important; max-width: 100% !important; }
+
+    .wa-header { background: linear-gradient(90deg, #d4ff00 0%, #aacc00 100%); color: #000; padding: 12px 16px;
+        display: flex; align-items: center; gap: 12px; margin-bottom: 1rem; border-bottom: 3px solid #000;
+        border-radius: 8px; }
+    .wa-name { font-weight: bold; font-size: 16px; color: #000 !important; }
+    .wa-status { font-size: 12px; color: #333 !important; }
+
+    .ticket-badge { background: rgba(212,255,0,0.15); border: 1px solid rgba(212,255,0,0.4); border-radius: 8px;
+        padding: 8px 12px; color: #d4ff00; font-size: 13px; margin-bottom: 10px; display: flex;
+        justify-content: space-between; align-items: center; }
+
+    .chat-wrap { background: rgba(236,229,221,0.95); border-radius: 12px; padding: 10px; margin-bottom: 10px; }
+
+    .msg-user { background: #DCF8C6; color: #000 !important; padding: 8px 12px; border-radius: 12px 2px 12px 12px;
+        margin: 6px 0 6px auto; max-width: 80%; width: fit-content; text-align: right; font-size: 14px;
+        line-height: 1.6; word-break: break-word; white-space: pre-wrap; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+    .msg-bot { background: white; color: #000 !important; padding: 8px 12px; border-radius: 2px 12px 12px 12px;
+        margin: 6px auto 6px 0; max-width: 80%; width: fit-content; text-align: right; font-size: 14px;
+        line-height: 1.6; border-right: 3px solid #d4ff00; word-break: break-word; white-space: pre-wrap;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+    .msg-agent { background: #eef4ff; color: #000 !important; padding: 8px 12px; border-radius: 2px 12px 12px 12px;
+        margin: 6px auto 6px 0; max-width: 80%; width: fit-content; text-align: right; font-size: 14px;
+        line-height: 1.6; border-right: 3px solid #3b82f6; word-break: break-word; white-space: pre-wrap; }
+    .msg-time { font-size: 11px; color: #666 !important; margin-top: 3px; }
+    .msg-wrapper-user { display: flex; justify-content: flex-end; width: 100%; }
+    .msg-wrapper-bot { display: flex; justify-content: flex-start; width: 100%; }
+
+    .stButton > button { background: transparent !important; color: #d4ff00 !important;
+        border: 1px solid rgba(212,255,0,0.4) !important; border-radius: 8px !important;
+        padding: 8px 16px !important; font-size: 13px !important; width: 100% !important; }
+    .stButton > button:hover { color: #000 !important; background: #d4ff00 !important; border-color: #d4ff00 !important; }
+
+    section[data-testid="stSidebar"] { background: rgba(15,20,35,0.97) !important; }
+    section[data-testid="stSidebar"] * { color: white !important; }
+    .stSelectbox label, .stFileUploader label, .stTextArea label, .stTextInput label { color: #d4ff00 !important; }
+
+    .metric-card { background: rgba(255,255,255,0.05); border: 1px solid rgba(212,255,0,0.3); border-radius: 12px;
+        padding: 20px; text-align: center; }
+    .metric-value { font-size: 2rem; font-weight: bold; color: #d4ff00; }
+    .metric-label { font-size: 0.85rem; color: #ccc; margin-top: 4px; }
+    .metric-target { font-size: 0.75rem; color: #888; margin-top: 2px; }
+    .metric-pass { color: #4ade80 !important; font-weight: bold; }
+    .metric-fail { color: #f87171 !important; font-weight: bold; }
+
+    .feedback-box { background: rgba(255,255,255,0.95); border-radius: 12px; padding: 24px; text-align: center;
+        margin: 10px 0; }
+    .feedback-box h3 { color: #000 !important; margin: 0 0 10px; }
+    .feedback-box p { color: #555 !important; }
+
+    .agent-card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px;
+        padding: 14px; margin-bottom: 8px; color: #eee; }
+    .status-open { color: #f87171; font-weight: bold; }
+    .status-progress { color: #facc15; font-weight: bold; }
+    .status-waiting { color: #60a5fa; font-weight: bold; }
+    .status-closed { color: #4ade80; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# ============= STATE =============
-if "ticket_id" not in st.session_state:
-    st.session_state.ticket_id = f"WSC-{datetime.now().strftime('%H%M%S')}"
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "assistant", "content": f"Welcome to {COMPANY_NAME} Support! 👋\nHow can I help you today?\n\nשלום! איך אוכל לעזור לך היום?"}
-    ]
-    st.session_state.transferred = False
-    st.session_state.show_feedback = False
-    st.session_state.rating = 0
-    st.session_state.all_ratings = []  # לדוחות
-    st.session_state.total_tickets = 0
-    st.session_state.resolved_by_bot = 0
+# ============================================================
+#  TABS - 3 מסכים ראשיים (מסך 4 המשוב משולב בתוך מסך הצ'אט)
+# ============================================================
+tab1, tab2, tab3 = st.tabs(["💬 צ'אט לקוח", "🎧 פאנל נציג תמיכה", "📊 דוחות ומדדים"])
 
-# ============= TABS =============
-tab1, tab2 = st.tabs(["💬 Chat Support", "📊 דוחות ומדדים"])
-
-# ============= TAB 1: CHAT =============
+# ============================================================
+#  TAB 1 - מסך 1: צ'אט הלקוח + מסך 4: משוב
+# ============================================================
 with tab1:
-    avatar = f'<img src="data:image/jpeg;base64,{logo_b64}" style="width:42px;height:42px;border-radius:8px;border:2px solid #000;">' if logo_b64 else "🎯"
-    st.markdown(f'<div class="wa-header">{avatar}<div style="flex:1;"><div class="wa-name">{COMPANY_NAME} Support</div><div class="wa-status">⚡ Technical Support | Online</div></div><div style="font-size:11px;background:rgba(0,0,0,0.15);padding:4px 10px;border-radius:12px;color:#000;">● ONLINE</div></div>', unsafe_allow_html=True)
+    st.markdown(f'''<div class="wa-header">🎯<div style="flex:1;">
+        <div class="wa-name">{COMPANY_NAME} Support</div>
+        <div class="wa-status">⚡ תמיכה טכנית | מקוון</div></div>
+        <div style="font-size:11px;background:rgba(0,0,0,0.15);padding:4px 10px;border-radius:12px;color:#000;">● ONLINE</div>
+        </div>''', unsafe_allow_html=True)
 
-    st.markdown(f'<div class="ticket-badge"><span>📋 <strong>Ticket {st.session_state.ticket_id}</strong></span><span style="opacity:0.7;">{datetime.now().strftime("%H:%M")}</span></div>', unsafe_allow_html=True)
+    ticket = get_ticket()
 
-    st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
-    for msg in st.session_state.messages:
-        if msg["role"] == "system":
-            continue
-        c = msg["content"]
-        if msg["role"] == "user":
-            st.markdown(f'<div class="msg-wrapper-user"><div class="msg-user">{c}<div class="msg-time">✓✓</div></div></div>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="msg-wrapper-bot"><div class="msg-bot">{c}<div class="msg-time">🎯 {COMPANY_NAME}</div></div></div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    with st.expander("📎 Open detailed ticket (category + attachment)"):
-        category = st.selectbox("Issue type:", ["—", "Live Feeds & Ingest", "Automated Clipping", "Distribution & Publishing", "Other"])
-        uploaded = st.file_uploader("Attach screenshot/video:", type=["jpg", "jpeg", "png", "mp4", "mov"])
-        
+    # --- שלב א: אין פנייה פתוחה -> טופס פתיחה ---
+    if ticket is None:
+        st.subheader("פתיחת פנייה חדשה")
+        category = st.selectbox("אופי הפנייה:", CATEGORIES)
+        description = st.text_area("תאר את הבעיה:", placeholder="לדוגמה: הסטרים שלי מציג מסך שחור...", height=100)
+        uploaded = st.file_uploader("צירוף קובץ (צילום מסך / הודעת שגיאה):", type=["jpg", "jpeg", "png", "mp4", "mov", "txt"])
         if uploaded:
             if uploaded.type.startswith("image"):
                 st.image(uploaded, width=250)
-            else:
-                st.video(uploaded)
-        
-        description = st.text_area("Description:", placeholder="Describe the issue...", height=80)
-        
-        if st.button("📤 Submit ticket"):
-            if description or uploaded or category != "—":
-                full_text = f"[{category}] {description}" if category != "—" else description
-                if not full_text:
-                    full_text = f"[{category}] File attached" if category != "—" else "File attached"
-                
-                st.session_state.messages.append({"role": "user", "content": full_text})
-                st.session_state.total_tickets += 1
-                
-                with st.spinner("🔍 Analyzing..."):
-                    if uploaded and uploaded.type.startswith("image"):
-                        img_b64 = base64.b64encode(uploaded.read()).decode()
-                        mime = "image/jpeg" if uploaded.name.lower().endswith(("jpg", "jpeg")) else "image/png"
-                        reply = analyze_image(img_b64, mime, full_text)
-                    else:
-                        reply = call_api_smart(st.session_state.messages)
-                
-                st.session_state.messages.append({"role": "assistant", "content": reply})
+
+        if st.button("📤 שלח פנייה", type="primary"):
+            if description.strip():
+                tid = new_ticket(category, description, uploaded.name if uploaded else None)
+                st.session_state.current_ticket_id = tid
+                ticket = st.session_state.tickets[tid]
+                with st.spinner("🔍 מנתח תקלה..."):
+                    ticket["first_reply_at"] = datetime.now()
+                    reply = call_bot(ticket["messages"])
+                    ticket["messages"].append({"role": "assistant", "content": reply})
+                    ticket["attempts"] = 1
                 st.rerun()
+            else:
+                st.warning("נא לתאר את הבעיה לפני השליחה")
 
-    if not st.session_state.transferred and not st.session_state.show_feedback:
-        if st.button("🔼 Escalate to human agent"):
-            st.session_state.transferred = True
-            user_msgs = [m["content"] for m in st.session_state.messages if m["role"] == "user"]
-            summary = f"Ticket {st.session_state.ticket_id} | {len(user_msgs)} messages | Auto-summary generated"
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": f'✅ Ticket {st.session_state.ticket_id} escalated to human agent.\n📋 Summary: {summary}\nA support agent will contact you shortly.'
-            })
-            st.session_state.show_feedback = True
-            st.rerun()
+    # --- שלב ב: יש פנייה פעילה ---
+    else:
+        st.markdown(f'''<div class="ticket-badge"><span>📋 <strong>פנייה {ticket['id']}</strong> |
+            {ticket['category']} | סטטוס: {ticket['status']}</span>
+            <span style="opacity:0.7;">{ticket['created_at'].strftime("%H:%M")}</span></div>''', unsafe_allow_html=True)
 
-    if not st.session_state.show_feedback:
-        if prompt := st.chat_input("Describe your issue / תאר את הבעיה..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.session_state.total_tickets += 1
-            
-            think = st.empty()
-            think.markdown('<div class="msg-wrapper-bot"><div class="thinking">🔍 Analyzing...</div></div>', unsafe_allow_html=True)
-            
-            reply = call_api_smart(st.session_state.messages)
-            
-            # אם הבוט פתר - לא הסלמה
-            if "escalat" not in reply.lower() and "מעביר" not in reply:
-                st.session_state.resolved_by_bot += 1
-            
-            think.empty()
-            st.session_state.messages.append({"role": "assistant", "content": reply})
-            st.rerun()
+        st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
+        for msg in ticket["messages"]:
+            if msg["role"] == "user":
+                st.markdown(f'<div class="msg-wrapper-user"><div class="msg-user">{msg["content"]}<div class="msg-time">✓✓</div></div></div>', unsafe_allow_html=True)
+            elif msg["role"] == "assistant":
+                st.markdown(f'<div class="msg-wrapper-bot"><div class="msg-bot">{msg["content"]}<div class="msg-time">🎯 {COMPANY_NAME}</div></div></div>', unsafe_allow_html=True)
+            elif msg["role"] == "agent":
+                st.markdown(f'<div class="msg-wrapper-bot"><div class="msg-agent">{msg["content"]}<div class="msg-time">🎧 נציג תמיכה</div></div></div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # ============= FEEDBACK =============
-    if st.session_state.show_feedback and st.session_state.rating == 0:
-        st.markdown('<div class="feedback-box"><h3>⭐ Rate your experience</h3><p>How would you rate the support you received?</p></div>', unsafe_allow_html=True)
-        cols = st.columns(5)
-        for i, col in enumerate(cols, 1):
-            with col:
-                if st.button(f"{'⭐' * i}", key=f"rate_{i}"):
-                    st.session_state.rating = i
-                    st.session_state.all_ratings.append(i)
+        # --- לחצני משוב על הפתרון (רק אם הפנייה עדיין פתוחה ולא מוסלמת) ---
+        if ticket["status"] not in ("סגורה",) and ticket["resolved_by"] is None:
+            st.write("האם הפתרון עזר?")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if st.button("✅ הפתרון עזר – סגור פנייה"):
+                    ticket["status"] = "סגורה"
+                    ticket["resolved_by"] = "bot"
+                    st.session_state.view_mode = "feedback"
+                    st.rerun()
+            with c2:
+                if st.button("🔁 לא עזר – הצג פתרון חלופי"):
+                    if ticket["attempts"] >= 2:
+                        # שני ניסיונות נכשלו -> הסלמה אוטומטית
+                        ticket["status"] = "פתוחה"
+                        ticket["resolved_by"] = "agent"
+                        ticket["summary"] = summarize_ticket(ticket)
+                        ticket["messages"].append({"role": "assistant",
+                            "content": f"שני ניסיונות פתרון לא הצליחו. הפנייה {ticket['id']} הוסלמה לנציג אנושי עם תקציר אוטומטי. נציג יחזור אליך בהקדם."})
+                        st.session_state.view_mode = "feedback"
+                    else:
+                        with st.spinner("🔍 מחפש פתרון חלופי..."):
+                            reply = call_bot(ticket["messages"], want_alternative=True)
+                            ticket["messages"].append({"role": "assistant", "content": reply})
+                            ticket["attempts"] += 1
+                    st.rerun()
+            with c3:
+                if st.button("🔼 הסלמה לנציג אנושי"):
+                    ticket["status"] = "פתוחה"
+                    ticket["resolved_by"] = "agent"
+                    ticket["summary"] = summarize_ticket(ticket)
+                    ticket["messages"].append({"role": "assistant",
+                        "content": f"הפנייה {ticket['id']} הוסלמה לנציג אנושי עם תקציר אוטומטי. נציג יחזור אליך בהקדם."})
+                    st.session_state.view_mode = "feedback"
                     st.rerun()
 
-    if st.session_state.rating > 0:
-        st.success(f"✅ Thank you! Rating: {'⭐' * st.session_state.rating} ({st.session_state.rating}/5)")
-        st.info(f"📋 Ticket {st.session_state.ticket_id} closed.")
+        # --- מסך 4: משוב לקוח (מוצג אוטומטית עם סגירה/הסלמה) ---
+        if st.session_state.view_mode == "feedback":
+            if ticket["rating"] is None:
+                st.markdown('<div class="feedback-box"><h3>⭐ דרג את חוויית השירות</h3><p>כמה היית מדרג את התמיכה שקיבלת?</p></div>', unsafe_allow_html=True)
+                cols = st.columns(5)
+                for i, col in enumerate(cols, 1):
+                    with col:
+                        if st.button(f"{'⭐' * i}", key=f"rate_{ticket['id']}_{i}"):
+                            ticket["rating"] = i
+                            st.rerun()
+                note = st.text_area("הערות נוספות (לא חובה):", key=f"note_{ticket['id']}")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("📨 שלח משוב"):
+                        if ticket["rating"] is None:
+                            ticket["rating"] = 0
+                        ticket["feedback_note"] = note
+                        st.success("✅ תודה על המשוב!")
+                with c2:
+                    if st.button("⏭️ דלג"):
+                        ticket["feedback_note"] = None
+                        st.session_state.current_ticket_id = None
+                        st.session_state.view_mode = "form"
+                        st.rerun()
+            else:
+                ticket["feedback_note"] = ticket.get("feedback_note")
+                st.success(f"✅ תודה על המשוב! דירוג: {'⭐' * ticket['rating']}")
+                st.info(f"📋 פנייה {ticket['id']} {'נסגרה' if ticket['resolved_by']=='bot' else 'הוסלמה לנציג'}.")
+                if st.button("🔄 פנייה חדשה"):
+                    st.session_state.current_ticket_id = None
+                    st.session_state.view_mode = "form"
+                    st.rerun()
 
-# ============= TAB 2: REPORTS =============
+
+# ============================================================
+#  TAB 2 - מסך 2: פאנל נציג התמיכה
+# ============================================================
 with tab2:
+    st.markdown("## 🎧 פאנל נציג תמיכה")
+    all_tickets = list(st.session_state.tickets.values())
+
+    if not all_tickets:
+        st.info("אין פניות במערכת כרגע.")
+    else:
+        search = st.text_input("🔍 חיפוש לפי מזהה פנייה / קטגוריה / תיאור:")
+        filtered = all_tickets
+        if search:
+            s = search.strip().lower()
+            filtered = [t for t in all_tickets if s in t["id"].lower() or s in t["category"].lower() or s in t["description"].lower()]
+
+        col_list, col_detail = st.columns([1, 2])
+
+        with col_list:
+            st.markdown("### רשימת פניות")
+            status_cls = {"פתוחה": "status-open", "בטיפול": "status-progress",
+                          "ממתין ללקוח": "status-waiting", "סגורה": "status-closed"}
+            for t in sorted(filtered, key=lambda x: x["created_at"], reverse=True):
+                cls = status_cls.get(t["status"], "")
+                st.markdown(f'''<div class="agent-card">
+                    <strong>{t['id']}</strong><br>
+                    {t['category']}<br>
+                    <span class="{cls}">● {t['status']}</span>
+                    {" | 🔼 הוסלם" if t['resolved_by']=='agent' else ""}
+                    </div>''', unsafe_allow_html=True)
+                if st.button(f"פתח פנייה {t['id']}", key=f"open_{t['id']}"):
+                    st.session_state.selected_agent_ticket = t["id"]
+                    st.rerun()
+
+        with col_detail:
+            sel_id = st.session_state.selected_agent_ticket
+            if sel_id and sel_id in st.session_state.tickets:
+                t = st.session_state.tickets[sel_id]
+                st.markdown(f"### פנייה {t['id']}")
+                st.write(f"**קטגוריה:** {t['category']} | **נוצרה:** {t['created_at'].strftime('%d/%m %H:%M')}")
+
+                new_status = st.selectbox("עדכון סטטוס:", STATUSES, index=STATUSES.index(t["status"]), key=f"status_{t['id']}")
+                if new_status != t["status"]:
+                    t["status"] = new_status
+
+                if t.get("summary"):
+                    st.markdown("**📋 תקציר אוטומטי (מהבוט):**")
+                    st.code(t["summary"])
+
+                st.markdown("**היסטוריית שיחה מלאה:**")
+                st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
+                for msg in t["messages"]:
+                    if msg["role"] == "user":
+                        st.markdown(f'<div class="msg-wrapper-user"><div class="msg-user">{msg["content"]}</div></div>', unsafe_allow_html=True)
+                    elif msg["role"] == "assistant":
+                        st.markdown(f'<div class="msg-wrapper-bot"><div class="msg-bot">{msg["content"]}</div></div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<div class="msg-wrapper-bot"><div class="msg-agent">{msg["content"]}</div></div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                reply = st.text_input("הודעה ללקוח:", key=f"reply_{t['id']}")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("📨 שלח תגובה", key=f"send_{t['id']}"):
+                        if reply.strip():
+                            t["messages"].append({"role": "agent", "content": reply})
+                            t["status"] = "ממתין ללקוח"
+                            st.rerun()
+                with c2:
+                    if st.button("✅ סגור פנייה", key=f"close_{t['id']}"):
+                        t["status"] = "סגורה"
+                        st.rerun()
+            else:
+                st.info("בחר פנייה מהרשימה כדי לצפות בפרטים.")
+
+
+# ============================================================
+#  TAB 3 - מסך 3: דוחות ומדדים
+# ============================================================
+with tab3:
     st.markdown(f"# 📊 דוחות ומדדים — {COMPANY_NAME}")
+
+    filt_col, exp_col1, exp_col2 = st.columns([2, 1, 1])
+    with filt_col:
+        time_range = st.selectbox("טווח זמנים:", ["הכל", "היום", "השבוע האחרון", "החודש האחרון"])
+
+    all_tickets = list(st.session_state.tickets.values())
+    now = datetime.now()
+    if time_range == "היום":
+        all_tickets = [t for t in all_tickets if t["created_at"].date() == now.date()]
+    elif time_range == "השבוע האחרון":
+        all_tickets = [t for t in all_tickets if t["created_at"] >= now - timedelta(days=7)]
+    elif time_range == "החודש האחרון":
+        all_tickets = [t for t in all_tickets if t["created_at"] >= now - timedelta(days=30)]
+
+    total = max(len(all_tickets), 1)
+    resolved_by_bot = len([t for t in all_tickets if t["resolved_by"] == "bot"])
+    escalated = len([t for t in all_tickets if t["resolved_by"] == "agent"])
+    bot_resolved_pct = round((resolved_by_bot / total) * 100) if all_tickets else 0
+
+    response_times = [ (t["first_reply_at"] - t["created_at"]).total_seconds()
+                        for t in all_tickets if t["first_reply_at"] ]
+    avg_time = round(sum(response_times) / len(response_times), 1) if response_times else 0
+
+    ratings = [t["rating"] for t in all_tickets if t.get("rating")]
+    avg_rating = round(sum(ratings) / len(ratings), 1) if ratings else 0
+
+    accuracy = 84  # יעד מדיד בפועל ע"י תיוג ידני מול סיווג הבוט - כאן ערך הדגמה
+
+    # --- יצוא ---
+    with exp_col1:
+        df_export = pd.DataFrame([{
+            "מזהה": t["id"], "קטגוריה": t["category"], "סטטוס": t["status"],
+            "נפתר ע\"י": t["resolved_by"] or "-", "דירוג": t.get("rating") or "-",
+            "נוצר": t["created_at"].strftime("%d/%m/%Y %H:%M")
+        } for t in all_tickets])
+        buf = io.BytesIO()
+        if not df_export.empty:
+            df_export.to_excel(buf, index=False, engine="openpyxl")
+        st.download_button("📥 יצוא לאקסל", data=buf.getvalue(), file_name="wsc_report.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with exp_col2:
+        st.markdown("""<a href="javascript:window.print()">
+            <button style="width:100%;padding:8px;border-radius:8px;border:1px solid rgba(212,255,0,0.4);
+            background:transparent;color:#d4ff00;cursor:pointer;">🖨️ הדפסה / PDF</button></a>""",
+            unsafe_allow_html=True)
+
     st.markdown("---")
-    
-    # חישוב מדדים בזמן אמת
-    total = max(st.session_state.total_tickets, 1)
-    bot_resolved_pct = round((st.session_state.resolved_by_bot / total) * 100) if total > 0 else 0
-    avg_rating = round(sum(st.session_state.all_ratings) / len(st.session_state.all_ratings), 1) if st.session_state.all_ratings else 0
-    
-    # 4 כרטיסי מדד
+
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
         passed = bot_resolved_pct >= 30
-        cls = "metric-pass" if passed else "metric-fail"
-        icon = "✓" if passed else "✗"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{bot_resolved_pct}%</div>
-            <div class="metric-label">פתרון עצמאי של הבוט</div>
-            <div class="metric-target">יעד: ≥30%</div>
-            <div class="{cls}">{icon} {"מעל היעד" if passed else "מתחת ליעד"}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
+        cls, icon = ("metric-pass", "✓") if passed else ("metric-fail", "✗")
+        st.markdown(f'''<div class="metric-card"><div class="metric-value">{bot_resolved_pct}%</div>
+            <div class="metric-label">פתרון עצמאי של הבוט</div><div class="metric-target">יעד: ≥30%</div>
+            <div class="{cls}">{icon} {"מעל היעד" if passed else "מתחת ליעד"}</div></div>''', unsafe_allow_html=True)
     with col2:
-        avg_time = 12  # ערך לדוגמה
-        passed = avg_time < 30
-        cls = "metric-pass" if passed else "metric-fail"
-        icon = "✓" if passed else "✗"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{avg_time} שנ'</div>
-            <div class="metric-label">זמן מענה ראשוני ממוצע</div>
-            <div class="metric-target">יעד: &lt;30 שנ'</div>
-            <div class="{cls}">{icon} {"מתחת ליעד" if passed else "מעל היעד"}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
+        passed = avg_time < 30 if response_times else True
+        cls, icon = ("metric-pass", "✓") if passed else ("metric-fail", "✗")
+        st.markdown(f'''<div class="metric-card"><div class="metric-value">{avg_time} שנ'</div>
+            <div class="metric-label">זמן מענה ראשוני ממוצע</div><div class="metric-target">יעד: &lt;30 שנ'</div>
+            <div class="{cls}">{icon} {"מתחת ליעד" if passed else "מעל היעד"}</div></div>''', unsafe_allow_html=True)
     with col3:
-        accuracy = 84  # ערך לדוגמה
         passed = accuracy > 80
-        cls = "metric-pass" if passed else "metric-fail"
-        icon = "✓" if passed else "✗"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{accuracy}%</div>
-            <div class="metric-label">דיוק סיווג תקלות</div>
-            <div class="metric-target">יעד: &gt;80%</div>
-            <div class="{cls}">{icon} {"מעל היעד" if passed else "מתחת ליעד"}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
+        cls, icon = ("metric-pass", "✓") if passed else ("metric-fail", "✗")
+        st.markdown(f'''<div class="metric-card"><div class="metric-value">{accuracy}%</div>
+            <div class="metric-label">דיוק סיווג תקלות</div><div class="metric-target">יעד: &gt;80%</div>
+            <div class="{cls}">{icon} {"מעל היעד" if passed else "מתחת ליעד"}</div></div>''', unsafe_allow_html=True)
     with col4:
         passed = avg_rating >= 4.0
-        cls = "metric-pass" if passed else "metric-fail"
-        icon = "✓" if passed else "✗"
+        cls, icon = ("metric-pass", "✓") if passed else ("metric-fail", "✗")
         display_rating = f"{avg_rating}/5" if avg_rating > 0 else "—"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{display_rating}</div>
-            <div class="metric-label">שביעות רצון לקוחות</div>
-            <div class="metric-target">יעד: ≥4.0</div>
-            <div class="{cls}">{icon} {"מעל היעד" if passed and avg_rating > 0 else "ממתין לדירוגים"}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # תרשים פניות לפי קטגוריה
-    st.subheader("📈 פניות לפי קטגוריה")
-    import pandas as pd
-    
-    chart_data = pd.DataFrame({
-        'קטגוריה': ['Live Feeds', 'Clipping', 'Distribution', 'תפעולי', 'אחר'],
-        'כמות פניות': [208, 112, 52, 28, 14]
-    })
-    st.bar_chart(chart_data.set_index('קטגוריה'))
-    
-    st.markdown("---")
-    
-    # סטטיסטיקות נוספות
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("סה\"כ פניות", st.session_state.total_tickets)
-    with col_b:
-        st.metric("נפתרו ע\"י בוט", st.session_state.resolved_by_bot)
-    with col_c:
-        st.metric("הוסלמו לנציג", st.session_state.total_tickets - st.session_state.resolved_by_bot)
+        st.markdown(f'''<div class="metric-card"><div class="metric-value">{display_rating}</div>
+            <div class="metric-label">שביעות רצון לקוחות</div><div class="metric-target">יעד: ≥4.0</div>
+            <div class="{cls}">{icon if avg_rating>0 else ""} {"מעל היעד" if passed and avg_rating>0 else ("ממתין לדירוגים" if avg_rating==0 else "מתחת ליעד")}</div></div>''', unsafe_allow_html=True)
 
-# ============= SIDEBAR =============
+    st.markdown("---")
+    st.subheader("📈 התפלגות פניות לפי קטגוריה")
+
+    cat_counts = {c: 0 for c in CATEGORIES}
+    for t in all_tickets:
+        cat_counts[t["category"]] = cat_counts.get(t["category"], 0) + 1
+    chart_df = pd.DataFrame({"קטגוריה": list(cat_counts.keys()), "כמות פניות": list(cat_counts.values())})
+
+    if chart_df["כמות פניות"].sum() > 0:
+        bar = alt.Chart(chart_df).mark_bar(color="#d4ff00").encode(
+            x=alt.X("כמות פניות:Q"),
+            y=alt.Y("קטגוריה:N", sort="-x"),
+            tooltip=["קטגוריה", "כמות פניות"]
+        ).properties(height=220)
+        st.altair_chart(bar, use_container_width=True)
+    else:
+        st.info("אין עדיין נתונים להצגה - פתח פניות בטאב הצ'אט.")
+
+    st.markdown("---")
+    st.subheader("🔢 סיכום כמותי")
+    c_a, c_b, c_c = st.columns(3)
+    with c_a:
+        st.metric("סה\"כ פניות", len(all_tickets))
+    with c_b:
+        st.metric("נפתרו ע\"י בוט", resolved_by_bot)
+    with c_c:
+        st.metric("הוסלמו לנציג", escalated)
+
+
+# ============================================================
+#  SIDEBAR
+# ============================================================
 with st.sidebar:
-    if logo_b64:
-        st.image("logo.jpg", use_container_width=True)
     st.markdown(f"### 🎯 {COMPANY_NAME}")
     st.markdown("**Technical Support 24/7**")
     st.divider()
-    st.markdown(f"**🎫 Current Ticket:**")
-    st.code(st.session_state.ticket_id)
+    t = get_ticket()
+    if t:
+        st.markdown("**🎫 פנייה נוכחית:**")
+        st.code(t["id"])
     st.divider()
-    st.markdown("**📊 Categories:**")
-    st.markdown("🎬 Live Feeds & Ingest")
-    st.markdown("✂️ Automated Clipping")
-    st.markdown("📡 Distribution")
-    st.markdown("❓ Other")
+    st.markdown("**📊 קטגוריות:**")
+    for c in CATEGORIES:
+        st.markdown(f"• {c}")
     st.divider()
-    if st.button("🔄 New Ticket"):
-        st.session_state.messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "assistant", "content": f"Welcome to {COMPANY_NAME} Support! 👋\nHow can I help you today?"}
-        ]
-        st.session_state.transferred = False
-        st.session_state.show_feedback = False
-        st.session_state.rating = 0
-        st.session_state.ticket_id = f"WSC-{datetime.now().strftime('%H%M%S')}"
+    if st.button("🔄 פנייה חדשה"):
+        st.session_state.current_ticket_id = None
+        st.session_state.view_mode = "form"
         st.rerun()
     st.divider()
     st.caption("**Graduation Project**")

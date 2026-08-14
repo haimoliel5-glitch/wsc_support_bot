@@ -65,7 +65,7 @@ def call_bot(messages, want_alternative=False):
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + messages[-6:]
     if want_alternative:
         msgs.append({"role": "user", "content": "הפתרון הקודם לא עזר, תן לי בבקשה גישה/פתרון חלופי שונה."})
-    payload = {"model": "gpt-4o-mini", "messages": msgs, "max_tokens": 500}
+    payload = {"model": "gpt-4o-mini", "messages": msgs, "max_tokens": 4000}
     try:
         r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=60)
         st.session_state["_last_api_status"] = r.status_code

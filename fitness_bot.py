@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import os
 import io
+import time
 import base64
 import uuid
 from datetime import datetime, timedelta
@@ -66,23 +67,33 @@ def call_bot(messages, want_alternative=False):
     if want_alternative:
         msgs.append({"role": "user", "content": "הפתרון הקודם לא עזר, תן לי בבקשה גישה/פתרון חלופי שונה."})
     payload = {"model": "gpt-4o-mini", "messages": msgs, "max_tokens": 4000}
-    try:
-        r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=60)
-        st.session_state["_last_api_status"] = r.status_code
+
+    last_error = None
+    for attempt in range(1, 4):  # עד 3 ניסיונות, כדי לצלוח קור/עומס זמני
         try:
-            data = r.json()
-        except Exception:
-            st.session_state["_last_api_error"] = f"Status {r.status_code}: תשובה לא תקינה (לא JSON) - {r.text[:300]}"
-            return "לא הצלחתי לעבד את הבקשה, מעביר לנציג אנושי."
-        if "choices" in data:
-            content = data["choices"][0]["message"].get("content", "")
-            if content and content.strip():
-                st.session_state["_last_api_error"] = None
-                return content.strip()
-        st.session_state["_last_api_error"] = f"Status {r.status_code}: {str(data)[:400]}"
-    except Exception as e:
-        st.session_state["_last_api_error"] = f"חריגה: {str(e)[:400]}"
-    return "לא הצלחתי לעבד את הבקשה, מעביר לנציג אנושי."
+            r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=90)
+            st.session_state["_last_api_status"] = r.status_code
+            try:
+                data = r.json()
+            except Exception:
+                last_error = f"נסיון {attempt} | Status {r.status_code}: תשובה לא תקינה - {r.text[:200]}"
+                continue
+            if "choices" in data:
+                content = data["choices"][0]["message"].get("content", "")
+                if content and content.strip():
+                    st.session_state["_last_api_error"] = None
+                    return content.strip()
+                last_error = f"נסיון {attempt} | Status {r.status_code}: תוכן ריק - {str(data)[:300]}"
+                continue
+            last_error = f"נסיון {attempt} | Status {r.status_code}: {str(data)[:300]}"
+        except requests.exceptions.Timeout:
+            last_error = f"נסיון {attempt} | Timeout - השרת לא ענה תוך 90 שניות"
+        except Exception as e:
+            last_error = f"נסיון {attempt} | חריגה: {str(e)[:300]}"
+        time.sleep(2)  # רגע לפני ניסיון חוזר
+
+    st.session_state["_last_api_error"] = last_error
+    return "לא הצלחתי לעבד את הבקשה אחרי כמה ניסיונות, מעביר לנציג אנושי."
 
 
 def summarize_ticket(ticket):

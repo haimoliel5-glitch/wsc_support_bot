@@ -68,13 +68,20 @@ def call_bot(messages, want_alternative=False):
     payload = {"model": "gpt-4o-mini", "messages": msgs, "max_tokens": 500}
     try:
         r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=60)
-        data = r.json()
+        st.session_state["_last_api_status"] = r.status_code
+        try:
+            data = r.json()
+        except Exception:
+            st.session_state["_last_api_error"] = f"Status {r.status_code}: תשובה לא תקינה (לא JSON) - {r.text[:300]}"
+            return "לא הצלחתי לעבד את הבקשה, מעביר לנציג אנושי."
         if "choices" in data:
             content = data["choices"][0]["message"].get("content", "")
             if content and content.strip():
+                st.session_state["_last_api_error"] = None
                 return content.strip()
+        st.session_state["_last_api_error"] = f"Status {r.status_code}: {str(data)[:400]}"
     except Exception as e:
-        return f"שגיאה בתקשורת עם השרת: {str(e)[:100]}"
+        st.session_state["_last_api_error"] = f"חריגה: {str(e)[:400]}"
     return "לא הצלחתי לעבד את הבקשה, מעביר לנציג אנושי."
 
 
@@ -440,10 +447,19 @@ with tab3:
             "נוצר": t["created_at"].strftime("%d/%m/%Y %H:%M")
         } for t in all_tickets])
         buf = io.BytesIO()
+        excel_ok = True
         if not df_export.empty:
-            df_export.to_excel(buf, index=False, engine="openpyxl")
-        st.download_button("📥 יצוא לאקסל", data=buf.getvalue(), file_name="wsc_report.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            try:
+                df_export.to_excel(buf, index=False, engine="openpyxl")
+            except ImportError:
+                excel_ok = False
+        if excel_ok:
+            st.download_button("📥 יצוא לאקסל", data=buf.getvalue(), file_name="wsc_report.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.download_button("📥 יצוא ל-CSV (openpyxl חסר בסביבה)",
+                                data=df_export.to_csv(index=False).encode("utf-8-sig"),
+                                file_name="wsc_report.csv", mime="text/csv")
     with exp_col2:
         st.markdown("""<a href="javascript:window.print()">
             <button style="width:100%;padding:8px;border-radius:8px;border:1px solid rgba(212,255,0,0.4);
@@ -528,6 +544,14 @@ with st.sidebar:
         st.session_state.current_ticket_id = None
         st.session_state.view_mode = "form"
         st.rerun()
+    st.divider()
+    with st.expander("🔧 דיבאג API"):
+        st.write("קוד סטטוס אחרון:", st.session_state.get("_last_api_status", "-"))
+        err = st.session_state.get("_last_api_error")
+        if err:
+            st.error(err)
+        else:
+            st.success("אין שגיאה רשומה")
     st.divider()
     st.caption("**Graduation Project**")
     st.caption("WSC Sports Support System")
